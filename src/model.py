@@ -34,8 +34,8 @@ class Model(nn.Module):
     def forward(self, input):
         query, doc, negs = input
         maxlen = max(doc.shape[1], negs.shape[1])
-        doc = F.pad(doc, (0, 0, 0, maxlen-doc.shape[1]))
-        negs = F.pad(negs, (0, 0, 0, maxlen-negs.shape[1]))
+        doc = F.pad(doc, (0, maxlen-doc.shape[1]))
+        negs = F.pad(negs, (0, maxlen-negs.shape[1]))
         queryEmb = self.queryTower(query)
         docAndNegEmb = self.docTower(torch.concat([doc, negs], dim=0))
         loss = self.loss(queryEmb, docAndNegEmb)
