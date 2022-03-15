@@ -10,6 +10,7 @@ import gensim
 
 jieba.initialize()
 path = r'D:\ai-risk\aliwentian\word2vec\word2vec.bin'
+path = '../word2vec/word2vec.bin'
 word2vec = gensim.models.KeyedVectors.load(path)
 
 #取腾讯词向量的前100万个
@@ -25,10 +26,11 @@ for word in  word2vec.index_to_key[:1000000]:
 # word2vec = np.concatenate([np.zeros((2, word_dim)), word2vec])
 
 class MyDataSet():
-    def __init__(self, path, word2id, batch_size=64, maxlen=32, negs_num=32):
+    def __init__(self, path, word2id, batch_size=32, maxlen=32, negs_num=32):
         self.queries = self.readQuery(path)
         self.docs = self.readDoc(path)
         self.labels = self.readLabel(path)
+        self.devqueries = self.readQuery(path, mode='dev')
         self.step = 0
         self.batch_size = batch_size
         self.word2id = word2id
@@ -123,15 +125,65 @@ class MyDataSet():
             queries = pad_sequence(queries, batch_first=True)
             docs = pad_sequence(docs, batch_first=True)
             negs = pad_sequence(negs, batch_first=True)
-            yield queries, docs
+            yield queries, docs, negs
             if end == len(self.test_permutation):
                 break
             else:
                 step += 1
+                
+    def iter_dev_queries(self):
+        step = 0
+        while True:
+            start = step * self.batch_size
+            end = min(len(self.devqueries), start + self.batch_size)
+            queries = []
+            for index in range(start, end):
+                query = self.devqueries[index]
+                #query = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in query])  # 数字和字母是否单独切分
+                queryid = []
+                for subquery in query.split():
+                    subquery = jieba.lcut(subquery, HMM=False)
+                    subquery = [self.word2id.get(word, 1) for word in subquery]
+                    queryid.extend(subquery)
+                queries.append(torch.tensor(queryid[:self.maxlen]))
             
-    def readQuery(self, path):
-        with open(path+'train.query.txt', encoding='utf-8') as f:
-            queries = [''] + [line.strip().split('\t')[1] for line in f.readlines()]
+            queries = pad_sequence(queries, batch_first=True)
+            yield queries
+            if end == len(self.devqueries):
+                break
+            else:
+                step += 1   
+                
+    def iter_docs(self):
+        step = 0
+        while True:
+            start = step * self.batch_size
+            end = min(len(self.docs), start + self.batch_size)
+            docs, negs = []
+            for index in range(start, end): 
+                doc = self.docs[index+1]
+                #doc = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in doc])
+                docid = []
+                for subdoc in doc.split():
+                    subdoc = jieba.lcut(subdoc, HMM=False)
+                    subdoc = [self.word2id.get(word, 1) for word in subdoc]
+                    docid.extend(subdoc)
+                docs.append(torch.tensor(docid[:self.maxlen]))
+        
+            docs = pad_sequence(docs, batch_first=True)
+            yield docs
+            if end == len(self.docs):
+                break
+            else:
+                step += 1
+    
+    def readQuery(self, path, mode='train'):
+        if mode == 'train':
+            with open(path+'train.query.txt', encoding='utf-8') as f:
+                queries = [''] + [line.strip().split('\t')[1] for line in f.readlines()]
+        if mode == 'dev':
+            with open(path+'dev.query.txt', encoding='utf-8') as f:
+                queries = [line.strip().split('\t')[1] for line in f.readlines()]
         return queries
     
     def readDoc(self, path):

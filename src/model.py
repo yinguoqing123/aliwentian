@@ -1,6 +1,3 @@
-from pydoc import doc
-from tkinter import E
-from turtle import forward
 import torch 
 from torch import nn 
 import torch.nn.functional as F
@@ -31,11 +28,14 @@ class Model(nn.Module):
         docEmb = self.emb(input)
         docEmb = torch.sum(docEmb * mask, dim=-2)
         docEmb = docEmb / torch.sum(mask, dim=-2)
-        docEmb = self.torch.relu(self.dd1(docEmb))
+        docEmb = torch.relu(self.dd1(docEmb))
         return docEmb
         
     def forward(self, input):
         query, doc, negs = input
+        maxlen = max(doc.shape[1], negs.shape[1])
+        doc = F.pad(doc, (0, 0, 0, maxlen-doc.shape[1]))
+        negs = F.pad(negs, (0, 0, 0, maxlen-negs.shape[1]))
         queryEmb = self.queryTower(query)
         docAndNegEmb = self.docTower(torch.concat([doc, negs], dim=0))
         loss = self.loss(queryEmb, docAndNegEmb)
@@ -52,6 +52,9 @@ class Model(nn.Module):
     def scores(self, input):
         query, doc, negs = input
         queryEmb = self.queryTower(query)
+        maxlen = max(doc.shape[1], negs.shape[1])
+        doc = F.pad(doc, (0, maxlen-doc.shape[1]))
+        negs = F.pad(negs, (0, maxlen-negs.shape[1]))
         docAndNegEmb = self.docTower(torch.concat([doc, negs], dim=0))
         queryEmb = F.normalize(queryEmb, dim=-1)
         docAndNegEmb = F.normalize(docAndNegEmb, dim=-1)
