@@ -1,5 +1,6 @@
 from os import device_encoding
 from pydoc import doc
+from random import betavariate
 from turtle import forward
 import torch 
 from torch import nn 
@@ -12,6 +13,8 @@ import numpy as np
 path = r'D:\ai-risk\aliwentian\word2vec\word2vec.bin'
 path = '../word2vec/word2vec.bin'
 word2vec = gensim.models.KeyedVectors.load(path)
+
+gpuflag = torch.cuda.is_available()
         
 id2word = {i+2:j  for i, j in enumerate(word2vec.index_to_key[:1000000])}  # 0: <pad> 1:<unk>
 word2id = {j: i for i, j in id2word.items()}
@@ -27,12 +30,19 @@ model = Model(len(word2id), word2vec.shape[1], word2vec)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
 train_data = dataset.iter_train_permutation()
+lrscheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9)  # lr * epoch**setp
+best_hits10, best_hits1 = 0.0, 0.0
+
+if gpuflag:
+    model = model.cuda()
+
 for epoch in range(20):
     running_loss = 0
-    best_accuracy = 0.0
     for step in range(len(dataset)):
         queries, docs, negs = next(train_data)
         model.train()
+        if gpuflag:
+            queries, docs, negs = queries.cuda(), docs.cuda(), negs.cuda()
         loss = model((queries, docs, negs))
         optimizer.zero_grad()
         loss.backward()
@@ -41,16 +51,27 @@ for epoch in range(20):
         if step % 100 == 99:
             print(f"Epoch {epoch+1}, step {step+1}: {running_loss}")
             running_loss = 0 
+    lrscheduler.step()
     # evaluate
     test_data = dataset.iter_test_permutation()
     model.eval()
     with torch.no_grad():
+        sumhits10, sumhits1 = 0, 0
         for input in test_data:
-            accuracy = model.scores(input)
-            if accuracy > best_accuracy:
+            if gpuflag:
+                input = input.cuda()
+            hits10, hits1 = model.scores(input)
+            sumhits10 += hits10
+            sumhits1 += hits1
+            curhits10 = sumhits10/len(dataset.test_permutation)
+            curhits1 = sumhits1/len(dataset.test_permutation)
+            if curhits10 > best_hits10:
                 torch.save(model.state_dict(), f'../model/model.pt')
-                best_accuracy = accuracy
-        print(f"cur_accuracy: {accuracy} ,  max accuracy: {best_accuracy}" )
+                best_hits10 = curhits10
+            if curhits1 > best_hits1:
+                best_hits1 = curhits1
+        print(f"cur_hits10: {curhits10} ,  max hits10: {best_hits10}" )
+        print(f"cur_hits1: {curhits1} ,  max hits1: {best_hits1}")
         
         
 # 生成embedding文件

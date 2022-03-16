@@ -58,11 +58,20 @@ class Model(nn.Module):
         docAndNegEmb = self.docTower(torch.concat([doc, negs], dim=0))
         queryEmb = F.normalize(queryEmb, dim=-1)
         docAndNegEmb = F.normalize(docAndNegEmb, dim=-1)
-        scores = torch.matmul(queryEmb, docAndNegEmb.t())   # (batch_size, batch_size)
-        scores = scores.argmax(dim=-1)
-        tp = torch.sum(torch.eq(scores, torch.arange(queryEmb.shape[0])))
-        accuracy = tp / queryEmb.shape[0]
-        return accuracy.item()
+        scores = torch.matmul(queryEmb, docAndNegEmb.t())   # (batch_size, batch_size+negnums)
+        _, indices = scores.topk(10)   # (b, 10)
+        label = torch.arange(queryEmb.shape[0]).view(-1, 1).expand_as(indices)
+        hits = (label == indices).nonzero() 
+        if  len(hits) == 0:
+            return 0
+        else:
+            hits = (hits[:, 1] + 1).float()
+            hits = torch.reciprocal(hits)
+            hits10 = torch.sum(hits) / queryEmb.shape[0]
+        indices = scores.argmax(dim=-1)
+        tp = torch.sum(torch.eq(indices, torch.arange(queryEmb.shape[0])))
+        hits1 = tp / queryEmb.shape[0]
+        return hits10.item(), hits1.item()
         
         
         
