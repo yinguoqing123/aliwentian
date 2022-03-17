@@ -54,9 +54,9 @@ class Model(nn.Module):
         query, querychar, doc, docchar, neg, negchar = input
         maxlen = max(doc.shape[1], neg.shape[1])
         doc = F.pad(doc, (0, maxlen-doc.shape[1]))
-        docchar = F.pad(docchar, (0, maxlen-doc.shape[1]))
+        docchar = F.pad(docchar, (0, maxlen-docchar.shape[1]))
         neg = F.pad(neg, (0, maxlen-neg.shape[1]))
-        negchar = F.pad(negchar, (0, maxlen-neg.shape[1]))
+        negchar = F.pad(negchar, (0, maxlen-negchar.shape[1]))
         queryEmb = self.queryTower((query, querychar))
         docEmb = self.docTower((doc, docchar))
         negEmb = self.docTower((neg, negchar))
@@ -65,19 +65,21 @@ class Model(nn.Module):
         return loss
     
     def loss(self, queryEmb, docEmb):
-        scores = torch.matmul(queryEmb, docEmb.t()) * 5  # (batch_size, batch_size+neg_nums)
+        scores = torch.matmul(queryEmb, docEmb.t()) * 20  # (batch_size, batch_size+neg_nums)
         labels = torch.arange(scores.shape[0]).cuda()
-        loss = self.cretirion(scores, labels)
-        return loss
+        loss1 = self.cretirion(scores, labels)
+        scores = scores[:, :scores.shape[0]].t()
+        loss2 = self.cretirion(scores, labels)
+        return loss1 + loss2 * 0.4
     
     def scores(self, input):
         query, querychar, doc, docchar, neg, negchar = input
         queryEmb = self.queryTower((query, querychar))
         maxlen = max(doc.shape[1], neg.shape[1])
         doc = F.pad(doc, (0, maxlen-doc.shape[1]))
-        docchar = F.pad(docchar, (0, maxlen-doc.shape[1]))
+        docchar = F.pad(docchar, (0, maxlen-docchar.shape[1]))
         neg = F.pad(neg, (0, maxlen-neg.shape[1]))
-        negchar = F.pad(negchar, (0, maxlen-neg.shape[1]))
+        negchar = F.pad(negchar, (0, maxlen-negchar.shape[1]))
         docEmb = self.docTower((doc, docchar))
         negEmb = self.docTower((neg, negchar))
         docAndNegEmb = torch.cat([docEmb, negEmb], dim=0)
@@ -110,3 +112,48 @@ class AttentionPooling1D(nn.Module):
         x = x - (1 - mask) * 1e12
         x = F.softmax(x, dim=-2)  # N, w, 1
         return torch.sum(x * xo, dim=-2) # N*emd
+    
+class DilatedGatedConv1D(nn.Module):
+    """膨胀门卷积(DGCNN)
+    """
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size=3,
+                 dilation=1,
+                 skip_connect=True,
+                 drop_gate=None,
+                 **kwargs):
+        super(DilatedGatedConv1D, self).__init__(**kwargs)
+        self.in_channels = in_channels  #词向量的维度
+        self.out_channels = out_channels # 卷积后词向量的维度
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.skip_connect = skip_connect
+        self.drop_gate = drop_gate
+        self.conv1d = nn.Conv1d(
+            self.in_channels,
+            self.out_channels*2,
+            self.kernel_size,
+            dilatione=self.dilation,
+            padding='same'
+        )
+        if self.skip_connect and self.in_channels != self.out_channels:
+            self.conv1d_1x1 = nn.Conv1d(self.in_channels, self.out_channels, padding='same')
+        if self.drop_gate:
+            self.dropout = nn.Dropout(drop_gate)
+    def forward(self, input):
+        xo = input
+        mask = torch.gt(xo, 0).unsqueeze(dim=-1).float()
+        x = xo * mask 
+        x = self.conv1d(x)  
+        x, g = x[:, :self.out_channels, ...], x[:, self.out_channels:, ...]
+        if self.drop_gate:
+            g = self.dropout(g)
+        g = F.sigmoid(g)
+        if self.skip_connect:
+            if self.in_channels != self.out_channels:
+                xo = self.conv1d_1x1(xo)
+            return xo * (1 - g) + x * g
+        else:
+            return x * g * mask

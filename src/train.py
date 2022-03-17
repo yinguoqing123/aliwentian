@@ -38,7 +38,7 @@ best_hits10, best_hits1 = 0.0, 0.0
 if gpuflag:
     model = model.cuda()
 
-for epoch in range(1):
+for epoch in range(20):
     running_loss = 0
     for step in range(len(dataset)):
         input = next(train_data)
@@ -68,12 +68,13 @@ for epoch in range(1):
         curhits10 = sumhits10/len(dataset.test_permutation)
         curhits1 = sumhits1/len(dataset.test_permutation)
         if curhits10 > best_hits10:
-            torch.save(model.state_dict(), f'../model/model.pt')
+            torch.save(model.state_dict(), f'../model/model_best.pt')
             best_hits10 = curhits10
         if curhits1 > best_hits1:
             best_hits1 = curhits1
         print(f"cur_hits10: {curhits10} ,  max hits10: {best_hits10}" )
         print(f"cur_hits1: {curhits1} ,  max hits1: {best_hits1}")
+        torch.save(model.state_dict(), f'../model/model.pt')
         
         
 # 生成embedding文件
@@ -116,9 +117,3 @@ model.load_state_dict(torch.load(f'../model/model.pt'))
 generateEmbeddingFile(dataset, model)
                 
         
-
-
-
-
-
-

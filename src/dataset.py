@@ -26,7 +26,7 @@ for word in  word2vec.index_to_key[:1000000]:
 # word2vec = np.concatenate([np.zeros((2, word_dim)), word2vec])
 
 class MyDataSet():
-    def __init__(self, path, word2id, char2id, batch_size=32, maxlen=32, negs_num=32):
+    def __init__(self, path, word2id, char2id, batch_size=32, maxlen=64, negs_num=64):
         self.queries = self.readQuery(path)
         self.docs = self.readDoc(path)
         self.labels = self.readLabel(path)
@@ -163,10 +163,12 @@ class MyDataSet():
     def iter_train_queries(self):
         step = 0
         while True:
-            start = max(step * self.batch_size, 1)
+            start = step * self.batch_size
             end = min(len(self.queries), start + self.batch_size)
             queries, queries_char = [], []
             for index in range(start, end):
+                if index == 0:
+                    continue
                 query = self.queries[index]
                 query = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in query])  # 数字和字母是否单独切分
                 queryid, queryidchar = [], []
@@ -217,10 +219,12 @@ class MyDataSet():
     def iter_docs(self):
         step = 0
         while True:
-            start = max(step * self.batch_size, 1)
+            start = step * self.batch_size
             end = min(len(self.docs), start + self.batch_size)
-            docs, docs_char = []
+            docs, docs_char = [], []
             for index in range(start, end): 
+                if index == 0:
+                    continue
                 doc = self.docs[index]
                 doc = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in doc])
                 docid, docidchar = [], []
