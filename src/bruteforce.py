@@ -36,5 +36,24 @@ docindex.add(docEmb)                  # add vectors to the index, xb 为 (100000
 print(docindex.ntotal)            # 索引中向量的数量, 输出100000
 
 k = 10                         # we want to see 4 nearest neighbors
-D, I = docindex.search(trainqueryEmb[[0, 1]], k)     # xq为query embedding, 大小为(10000,128)
-print(I[:10])                   # neighbors of the 5 first queries
+D, I = docindex.search(trainqueryEmb[:1000], k)     # xq为query embedding, 大小为(10000,128)
+#print(I[:10])                   # neighbors of the 5 first queries
+
+with open('../data/qrels.train.tsv', 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+    lines = [line.strip().split('\t') for line in lines]
+    
+lines = lines[:1000]
+mrr = 0
+for queryid, docid in lines:
+    queryid, docid = int(queryid), int(docid)
+    try:
+        score = list(I[queryid-1]).index(docid-1)
+        mrr += 1.0 / score
+    except:
+        pass
+
+mrr = mrr / 1000
+print(f"mrr : {mrr}")
+        
+    
