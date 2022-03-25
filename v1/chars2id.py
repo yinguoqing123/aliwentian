@@ -28,7 +28,7 @@ with open("../data/dev.query.txt", 'r', encoding='utf-8') as f:
             
 
 charfreq = list(charCount.items())
-charfreq.sort(lambda x: x[1], revers=True)
+charfreq.sort(key=lambda x: x[1], reverse=True)
 
 char2id = {'<pad>': 0, '<unk>': 1}
 for char, freq in charfreq:
