@@ -3,19 +3,20 @@ from torch import nn
 import torch.nn.functional as F
 import math
 from transformers import BertTokenizer, BertModel, BertConfig, AutoConfig, AutoModel, AutoTokenizer
-AutoTokenizer.from_pretrained("peterchou/nezha-chinese-base")
 
 
 class Model(nn.Module):
     def __init__(self, hardnum=0) -> None:
         super().__init__()
-        #self.config = BertConfig.from_pretrained("hfl/chinese-roberta-wwm-ext")  # (attention_probs_dropout_prob, hidden_dropout_prob)
-        #self.config.update({'output_hidden_states': True})
-        self.bert = BertModel.from_pretrained("hfl/chinese-roberta-wwm-ext", config=self.config)
+        # self.config = BertConfig.from_pretrained("hfl/chinese-roberta-wwm-ext")  # (attention_probs_dropout_prob, hidden_dropout_prob)
+        # self.config.update({'output_hidden_states': True})
+        # self.bert = BertModel.from_pretrained("hfl/chinese-roberta-wwm-ext", config=self.config)
         #self.tokenizer = BertTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext")
-        self.config = AutoTokenizer.from_pretrained("peterchou/nezha-chinese-base")
-        self.bert = AutoModel.from_pretrained("peterchou/nezha-chinese-base")
-        self.tokenizer = AutoTokenizer.from_pretrained("peterchou/nezha-chinese-base")
+        state_dict = torch.load('./pretrained/pytorch_model.bin')
+        self.config = AutoConfig.from_pretrained("cyclone/simcse-chinese-roberta-wwm-ext")
+        self.config.update({'output_hidden_states': True})
+        self.bert = AutoModel.from_pretrained("cyclone/simcse-chinese-roberta-wwm-ext", state_dict=state_dict, config=self.config)
+        self.tokenizer = AutoTokenizer.from_pretrained("cyclone/simcse-chinese-roberta-wwm-ext")
         self.mlp = nn.Linear(768, 128)
         self.cretirion = nn.CrossEntropyLoss()
         self.hardnum = hardnum
@@ -23,9 +24,9 @@ class Model(nn.Module):
     def Tower(self, input):
         ids, mask = input
         out = self.bert(ids, mask)
-        lastout = out[0][:, 0, :]
-        firstout = out[2][1][:, 0, :]
-        out = ( lastout + firstout ) / 2
+        lastout = torch.sum(out[0], dim=1) / torch.sum(mask, dim=-1, keepdim=True)
+        firstout = torch.sum(out[2][0], dim=1) /torch.sum(mask, dim=-1, keepdim=True)
+        out =  lastout + firstout
         #out = torch.cat([firstout, lastout], dim=-1)
         out = self.mlp(out)
         out = F.normalize(out, dim=-1)
@@ -119,6 +120,7 @@ class Model(nn.Module):
             hardnegs = hardnegs.reshape(queries.size(0), self.hardnum, -1)
             hard_scores = self.hardscore(queries, hardnegs)
             scores = torch.cat([scores, hard_scores], dim=-1)
+            
         _, indices = scores.topk(5)   # (b, 10)
         label = torch.arange(queries.shape[0]).view(-1, 1).expand_as(indices).cuda()
         hits = (label == indices).nonzero() 

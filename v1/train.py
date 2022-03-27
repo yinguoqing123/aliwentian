@@ -30,9 +30,10 @@ word2vec = np.concatenate([np.zeros((2, word_dim)), word2vec])
 
 datapath = 'D:\\ai-risk\\aliwentian\\data\\'
 datapath = '../data/'
+harduse = False
 tokenizer = BertTokenizer.from_pretrained("hfl/rbt3")
-dataset = MyDataSet(datapath, word2id, char2id, tokenizer=tokenizer, batch_size=128, hard_num=5)
-model = Model(len(word2id), len(char2id), 128, embedding_init = word2vec)
+dataset = MyDataSet(datapath, word2id, char2id, tokenizer=tokenizer, batch_size=128, hard_num=2, hardneguse=harduse)
+model = Model(len(word2id), len(char2id), 128, harduse=harduse, embedding_init = word2vec)
 
 bert_parameters = list(model.bert.parameters())
 other_parameters = []
@@ -44,12 +45,15 @@ for name, param in model.named_parameters():
 p = [{'params': bert_parameters, 'lr': 3e-5}, {'params': other_parameters, 'lr': 1e-3}]
 optimizer = torch.optim.Adam(p)   # 1.4版本要加上
 
+# parameters = list(model.fusion.parameters())
+# optimizer = torch.optim.Adam(parameters, lr=1e-3)
+
 train_data = dataset.iter_permutation()
 lrscheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.8)  # lr * epoch**setp
-best_hits10, best_hits1 = 0.0, 0.0
+best_hits5, best_hits1 = 0.0, 0.0
 best_mrr = 0.0
 
-#model.load_state_dict(torch.load(f'../model/model_best.pt')) 
+# model.load_state_dict(torch.load(f'../model/model_best.pt_0.167')) 
 if gpuflag:
     model = model.cuda()
 
@@ -102,6 +106,25 @@ def evaluate(dataset, model):
             f.write(str(index+1) + '\t' + ','.join(hard_samples) + '\n' ) 
     return mrr
 
+test_data = dataset.iter_permutation(mode='test')
+model.eval()
+with torch.no_grad():
+    # mrr = evaluate(dataset, model)
+    # if mrr > best_mrr:
+    #     best_mrr = mrr
+    #     torch.save(model.state_dict(), f'../model_v2/model_best.pt')
+    sumhits5, sumhits1 = 0, 0
+    for input in test_data:
+        if gpuflag:
+            input = [d.cuda() for d in input]
+        hits5, hits1 = model.scores(input)
+        sumhits5 += hits5
+        sumhits1 += hits1
+    best_hits5 = sumhits5/len(dataset.test_permutation)
+    best_hits1 = sumhits1/len(dataset.test_permutation)
+    
+print(f"cur hits5: {best_hits5}, cur hits1: {best_hits1}")
+
 #dataset.readHardSamples(path, mode='random')
 for epoch in range(20):
     running_loss = 0
@@ -129,22 +152,22 @@ for epoch in range(20):
         #         best_mrr = mrr
         #         print(f"best mrr: {best_mrr}")
             # torch.save(model.state_dict(), f'../model/model_best.pt')
-        sumhits10, sumhits1 = 0, 0
+        sumhits5, sumhits1 = 0, 0
         for input in test_data:
             if gpuflag:
                 input = [d.cuda() for d in input]
-            hits10, hits1 = model.scores(input)
-            sumhits10 += hits10
+            hits5, hits1 = model.scores(input)
+            sumhits5 += hits5
             sumhits1 += hits1
-        curhits10 = sumhits10/len(dataset.test_permutation)
+        curhits5 = sumhits5/len(dataset.test_permutation)
         curhits1 = sumhits1/len(dataset.test_permutation)
-        if curhits10 > best_hits10:
+        if curhits5 > best_hits5:
             # torch.save(model.state_dict(), f'../model/model_best.pt')
-            best_hits10 = curhits10
+            best_hits5 = curhits5
         if curhits1 > best_hits1:
             best_hits1 = curhits1
             torch.save(model.state_dict(), f'../model/model_best.pt')
-        print(f"cur_hits10: {curhits10} ,  max hits10: {best_hits10}" )
+        print(f"cur_hits5: {curhits5} ,  max hits5: {best_hits5}" )
         print(f"cur_hits1: {curhits1} ,  max hits1: {best_hits1}")
         torch.save(model.state_dict(), f'../model/model.pt')
         # 更新hard_sample
@@ -194,7 +217,7 @@ def generateEmbeddingFile(dataset, model):
             f.write( str(i+1) + '\t' + ','.join(emb) + '\n')
 
 model.load_state_dict(torch.load(f'../model/model_best.pt'))  
-generateEmbeddingFile(dataset, model)
+#generateEmbeddingFile(dataset, model)
 
 
 def generateHardSample():
@@ -234,7 +257,7 @@ def generateHardSample():
     for queryid, docid in lines:
         queryid, docid = int(queryid), int(docid)
         try:
-            score = list(I[queryid-1]).index(docid-1)
+            score = list(I[queryid-1][:10]).index(docid-1)
             mrr += 1.0 / score
         except:
             pass
@@ -247,4 +270,4 @@ def generateHardSample():
             hard_samples = [str(id + 1) for id in list(I[index])]
             f.write(str(index+1) + '\t' + ','.join(hard_samples) + '\n' )
                 
-generateHardSample()
+#generateHardSample()

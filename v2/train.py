@@ -20,9 +20,9 @@ datapath = '../data/'
 
 # hfl/chinese-roberta-wwm-ext
 #tokenizer = BertTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext")
-tokenizer = AutoTokenizer.from_pretrained("peterchou/nezha-chinese-base")
-dataset = MyDataSet(datapath, tokenizer, batch_size=64, negs_num=64, harduse=False)
-model = Model(hardnum=0)
+tokenizer = AutoTokenizer.from_pretrained("cyclone/simcse-chinese-roberta-wwm-ext")
+dataset = MyDataSet(datapath, tokenizer, batch_size=32, negs_num=64, harduse=True, hardnum=1)
+model = Model(hardnum=1)
 optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5)   # 1.4版本要加上
 
 train_data = dataset.iter_permutation()
@@ -30,7 +30,7 @@ lrscheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9)  # lr * epo
 best_hits5, best_hits1 = 0.0, 0.0
 best_mrr = 0.0
 
-#model.load_state_dict(torch.load(f'../model_v2/model_best.pt')) 
+model.load_state_dict(torch.load(f'../model_v2/model_best.pt')) 
 if gpuflag:
     model = model.cuda()
 
@@ -80,26 +80,26 @@ def evaluate(dataset, model):
             f.write(str(index+1) + '\t' + ','.join(hard_samples) + '\n' )
     return mrr
 
-# test_data = dataset.iter_permutation(mode='test')
-# model.eval()
-# with torch.no_grad():
-#     # mrr = evaluate(dataset, model)
-#     # if mrr > best_mrr:
-#     #     best_mrr = mrr
-#     #     torch.save(model.state_dict(), f'../model_v2/model_best.pt')
-#     sumhits5, sumhits1 = 0, 0
-#     for input in test_data:
-#         if gpuflag:
-#             input = [d.cuda() for d in input]
-#         hits5, hits1 = model.scores(input)
-#         sumhits5 += hits5
-#         sumhits1 += hits1
-#     best_hits5 = sumhits5/len(dataset.test_permutation)
-#     best_hits1 = sumhits1/len(dataset.test_permutation)
+test_data = dataset.iter_permutation(mode='test')
+model.eval()
+with torch.no_grad():
+    # mrr = evaluate(dataset, model)
+    # if mrr > best_mrr:
+    #     best_mrr = mrr
+    #     torch.save(model.state_dict(), f'../model_v2/model_best.pt')
+    sumhits5, sumhits1 = 0, 0
+    for input in test_data:
+        if gpuflag:
+            input = [d.cuda() for d in input]
+        hits5, hits1 = model.scores(input)
+        sumhits5 += hits5
+        sumhits1 += hits1
+    best_hits5 = sumhits5/len(dataset.test_permutation)
+    best_hits1 = sumhits1/len(dataset.test_permutation)
     
-# print(f"cur hits5: {best_hits5}, cur hits1: {best_hits1}")
+print(f"cur hits5: {best_hits5}, cur hits1: {best_hits1}")
     
-for epoch in range(5):
+for epoch in range(3):
     running_loss = 0
     for step in range(len(dataset)):
         input = next(train_data)
@@ -209,7 +209,7 @@ def generateHardSample():
     docindex.add(docEmb)                  # add vectors to the index, xb 为 (100000,128)大小的numpy
     print(docindex.ntotal)            # 索引中向量的数量, 输出100000
 
-    k = 600                         # we want to see 4 nearest neighbors
+    k = 800                         # we want to see 4 nearest neighbors
     D, I = docindex.search(trainqueryEmb, k)     # xq为query embedding, 大小为(10000,128)
     #print(I[:10])                   # neighbors of the 5 first queries
 
@@ -221,7 +221,7 @@ def generateHardSample():
     for queryid, docid in lines:
         queryid, docid = int(queryid), int(docid)
         try:
-            score = list(I[queryid-1]).index(docid-1)
+            score = list(I[queryid-1])[:10].index(docid-1)
             mrr += 1.0 / score
         except:
             pass
@@ -234,6 +234,6 @@ def generateHardSample():
             hard_samples = [str(id + 1) for id in list(I[index])]
             f.write(str(index+1) + '\t' + ','.join(hard_samples) + '\n' )
             
-#generateHardSample()
+generateHardSample()
     
 
