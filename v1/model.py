@@ -8,14 +8,14 @@ class Model(nn.Module):
     def __init__(self, nums_word, nums_char, dims, harduse=False, embedding_init=None) -> None:
         super().__init__()
         self.config = BertConfig.from_pretrained("hfl/rbt3")  # (attention_probs_dropout_prob, hidden_dropout_prob)
-        #self.config.update({'output_hidden_states': True})
+        self.config.update({'output_hidden_states': True})
         self.bert = BertModel.from_pretrained("hfl/rbt3", config=self.config)
         self.tokenizer = BertTokenizer.from_pretrained("hfl/rbt3")
         self.wordemb = nn.Embedding(nums_word, 100)
         self.charemb = nn.Embedding(nums_char, dims)
         self.word2char = nn.Linear(100, dims)
         self.block = Block(dims)
-        self.fusion = nn.Linear(dims*2, 2)
+        self.fusion = nn.Linear(dims*4, 4)
         self.mlp = nn.Linear(768, dims)
         # self.block = AttentionPooling1D(dims)
         self.position_emb = nn.Embedding(64, dims)
@@ -33,11 +33,15 @@ class Model(nn.Module):
             self.wordemb.weight.data = torch.tensor(embedding_init, dtype=torch.float)
             self.wordemb.weight.requires_grad = False
             
-    def embFusion(self, queryEmb, queryEmbbert):
-        queryEmbbert = self.mlp(queryEmbbert)
-        weight = self.fusion(torch.cat([queryEmb, queryEmbbert], dim=-1))
-        weight = torch.softmax(weight, dim=-1) # (batch_size, 2)
-        queryEmb = weight[:, 0].unsqueeze(dim=-1) * queryEmb + weight[:, 1].unsqueeze(dim=-1) * queryEmbbert
+    def embFusion(self, queryEmb1, queryEmb2, queryEmbbert1, queryEmbbert2):
+        b = queryEmb1.shape[0]
+        queryEmbbert = self.mlp(torch.cat([queryEmbbert1, queryEmbbert2], dim=0))
+        queryEmbbert1, queryEmbbert2 = queryEmbbert[:b, :], queryEmbbert[b:, :]
+        weight = self.fusion(torch.cat([queryEmb1, queryEmb2, queryEmbbert1, queryEmbbert2], dim=-1))
+        weight = torch.softmax(weight, dim=-1) # (batch_size, 4)
+        queryEmb = weight.unsqueeze(-1) * torch.stack([queryEmb1, queryEmb2, queryEmbbert1, queryEmbbert2], dim=1)
+        queryEmb = torch.sum(queryEmb, dim=1)
+        # queryEmb = queryEmb + queryEmbbert
         return queryEmb
         
     def queryTower(self, input):
@@ -59,14 +63,17 @@ class Model(nn.Module):
         # queryEmb = queryEmb.permute(0, 2, 1)
         # queryEmb = self.queryatt(queryEmb, mask)
         # queryEmb = self.qd1(queryEmb)
-        queryEmb = self.block((queryEmb, mask))
+        queryEmb1 = self.block((queryEmb, mask)) 
+        queryEmb2 = torch.sum(queryEmb * mask, dim=1) / torch.sum(mask.squeeze(), dim=1, keepdim=True)
         
-        queryEmbbert = self.bert(query_bert, query_bertmask)[0][:, 0, :]
+        queryEmbbert = self.bert(query_bert, query_bertmask)
+        queryEmbbert1 = queryEmbbert[0][:, 0, :] 
+        queryEmbbert2 = queryEmbbert[2][1][:, 0, :]
 
-        queryEmb = self.embFusion(queryEmb, queryEmbbert)
+        queryEmb = self.embFusion(queryEmb1, queryEmb2, queryEmbbert1, queryEmbbert2)
+        queryEmb = F.normalize(queryEmb, dim=-1)
         # queryEmb = queryEmb + queryEmbbert
         
-        queryEmb = F.normalize(queryEmb, dim=-1)
         #queryEmb = torch.relu(self.qd1(queryEmb))
         return queryEmb
         
@@ -86,14 +93,17 @@ class Model(nn.Module):
         # docEmb = docEmb.permute(0, 2, 1)
         # docEmb = self.docatt(docEmb, mask)
         # docEmb = self.dd1(docEmb)
-        docEmb = self.block((docEmb, mask))
+        docEmb1 = self.block((docEmb, mask)) 
+        docEmb2 = torch.sum(docEmb * mask, dim=1) / torch.sum(mask.squeeze(), dim=1, keepdim=True)
         
-        docEmbbert = self.bert(doc_bert, doc_bertmask)[0][:, 0, :]
+        docEmbbert = self.bert(doc_bert, doc_bertmask)
+        docEmbbert1 = docEmbbert[0][:, 0, :] 
+        docEmbbert2 = docEmbbert[2][1][:, 0, :]
         
-        docEmb = self.embFusion(docEmb, docEmbbert)
+        docEmb = self.embFusion(docEmb1, docEmb2, docEmbbert1, docEmbbert2)
         # docEmb = docEmb + docEmbbert
         
-        docEmb = F.normalize(docEmb, dim=-1)
+        docEmb = = F.normalize(docEmb, dim=-1)
         #docEmb = torch.relu(self.dd1(docEmb))
         return docEmb
         
@@ -116,6 +126,8 @@ class Model(nn.Module):
             b, hard_num, s = hardneg.shape
             hardneg = hardneg.reshape(-1, s)
             hardneg_char = hardneg_char.reshape(-1, s)
+            hard_bert = hard_bert.reshape(-1, hard_bert.shape[-1])
+            hard_bertmask = hard_bertmask.reshape(-1, hard_bertmask.shape[-1])
             hardnegEmb = self.docTower((hardneg, hardneg_char, hard_bert, hard_bertmask))
             hardnegEmb = hardnegEmb.reshape(b, hard_num, -1)
             output += (hardnegEmb, )
@@ -175,6 +187,8 @@ class Model(nn.Module):
             b, hard_num, s = hardneg.shape
             hardneg = hardneg.reshape(-1, s)
             hardnegchar = hardnegchar.reshape(-1, s)
+            hard_bert = hard_bert.reshape(-1, hard_bert.shape[-1])
+            hard_bertmask = hard_bertmask.reshape(-1, hard_bertmask.shape[-1])
             hardnegEmb = self.docTower((hardneg, hardnegchar, hard_bert, hard_bertmask))
             hardnegEmb = hardnegEmb.reshape(b, hard_num, -1)
             scoreshard = torch.sum(queryEmb.unsqueeze(dim=1) * hardnegEmb, dim=-1)  # batch_size, hardnegnums

@@ -138,7 +138,7 @@ class MyDataSet():
                         hardnegs_char.append(docidchar)
                         doc_ids, doc_mask = self.encode2(doc)
                         hard_bert.append(doc_ids)
-                        hard_bertmask.append(hard_bertmask)
+                        hard_bertmask.append(doc_mask)
                         
                 hardnegs = pad_sequence(hardnegs, batch_first=True)
                 hardnegs_char = pad_sequence(hardnegs_char, batch_first=True)  
@@ -277,7 +277,7 @@ class MyDataSet():
                 lines = f.readlines()
                 for line in lines:
                     queryid, hardids = line.strip().split('\t')
-                    hardSamples[int(queryid)] = [int(id) for id in hardids.split(',')[500:600]]  
+                    hardSamples[int(queryid)] = [int(id) for id in hardids.split(',')[300:400]]  
         self.hardsamples = hardSamples
         
     def __len__(self):
