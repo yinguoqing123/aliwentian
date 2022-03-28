@@ -7,19 +7,19 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import random
 import numpy as np
-import jieba
 import gensim
 import os
+from segword import BIMMSegment
 
-jieba.initialize()
+#jieba.initialize()
 path = r'D:\ai-risk\aliwentian\word2vec\word2vec.bin'
 path = '../word2vec/word2vec.bin'
 word2vec = gensim.models.KeyedVectors.load(path)
 
 #取腾讯词向量的前100万个
-for word in  word2vec.index_to_key[:1000000]:
-    if word not in jieba.dt.FREQ:
-        jieba.add_word(word)
+# for word in  word2vec.index_to_key[:1500000]:
+#     if word not in jieba.dt.FREQ:
+#         jieba.add_word(word)
         
 #id2word = {i+2:j  for i, j in enumerate(word2vec.index_to_key[:1000000])}  # 0: <pad> 1:<unk>
 #word2id = {j: i for i, j in id2word.items()}
@@ -27,6 +27,8 @@ for word in  word2vec.index_to_key[:1000000]:
 # word2vec = word2vec.vectors[:1000000]
 # word_dim = word2vec.shape[1]
 # word2vec = np.concatenate([np.zeros((2, word_dim)), word2vec])
+
+seg = BIMMSegment(word2vec.index_to_key[:1500000])
 
 class MyDataSet():
     def __init__(self, path, word2id, char2id, tokenizer=None, batch_size=32, maxlen=64, negs_num=64, hard_num=3, hardneguse=False):
@@ -55,12 +57,14 @@ class MyDataSet():
         self.hardneguse = mode
         
     def encode(self, s):
-        s = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in s])
+        #s = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in s])
+        s = s.lower()
         id, idchar = [], []
         for sub in s.split():
             subchar = [self.char2id.get(char, 1) for char in sub]
-            sub = jieba.lcut(sub, HMM=False)
-            sub = self.words2charid(sub)
+            sub = seg.lcut(sub)
+            #sub = self.words2charid(sub)
+            sub = [self.word2id.get(word, 1) for word in sub]
             id.extend(sub)
             idchar.extend(subchar)
         return torch.tensor(id[:self.maxlen]), torch.tensor(idchar[:self.maxlen])

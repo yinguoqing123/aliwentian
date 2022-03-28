@@ -7,6 +7,7 @@ import gensim
 import numpy as np
 import json
 from transformers import BertTokenizer
+from torch.nn.utils.rnn import pad_sequence
 import faiss
 import random
 
@@ -17,22 +18,23 @@ word2vec = gensim.models.KeyedVectors.load(path)
 
 gpuflag = torch.cuda.is_available()
         
-id2word = {i+2:j  for i, j in enumerate(word2vec.index_to_key[:1000000])}  # 0: <pad> 1:<unk>
+id2word = {i+2:j  for i, j in enumerate(word2vec.index_to_key[:1500000])}  # 0: <pad> 1:<unk>
 id2word[0] = '<pad>'
 id2word[1] = '<unk>'
 word2id = {j: i for i, j in id2word.items()}
 
 char2id, id2char = json.load(open("charidmap.json"))
 
-word2vec = word2vec.vectors[:1000000]
+word2vec = word2vec.vectors[:1500000]
 word_dim = word2vec.shape[1]
 word2vec = np.concatenate([np.zeros((2, word_dim)), word2vec])
 
 datapath = 'D:\\ai-risk\\aliwentian\\data\\'
 datapath = '../data/'
 harduse = False
-tokenizer = BertTokenizer.from_pretrained("hfl/rbt3")
-dataset = MyDataSet(datapath, word2id, char2id, tokenizer=tokenizer, batch_size=128, hard_num=2, hardneguse=harduse)
+#tokenizer = BertTokenizer.from_pretrained("hfl/rbt3")
+tokenizer = BertTokenizer.from_pretrained("huawei-noah/TinyBERT_6L_zh")
+dataset = MyDataSet(datapath, word2id, char2id, tokenizer=tokenizer, batch_size=128, negs_num=64, hard_num=2, hardneguse=harduse)
 model = Model(len(word2id), len(char2id), 128, harduse=harduse, embedding_init = word2vec)
 
 bert_parameters = list(model.bert.parameters())
@@ -53,7 +55,7 @@ lrscheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.8)  # lr * epo
 best_hits5, best_hits1 = 0.0, 0.0
 best_mrr = 0.0
 
-# model.load_state_dict(torch.load(f'../model/model_best.pt_0.167')) 
+model.load_state_dict(torch.load(f'../model/model_best.pt')) 
 if gpuflag:
     model = model.cuda()
 
@@ -126,58 +128,92 @@ with torch.no_grad():
 print(f"cur hits5: {best_hits5}, cur hits1: {best_hits1}")
 
 #dataset.readHardSamples(path, mode='random')
-for epoch in range(20):
+for epoch in range(4, 15):
     running_loss = 0
     for step in range(len(dataset)):
         input = next(train_data)
         model.train()
         if gpuflag:
             input = [f.cuda() for f in input]
-        loss = model(input)
+        loss, hardids = model(input)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
+        # hardids 再训练一次
+        if epoch >= 3:
+            hardneg, hardcharneg = [], []
+            hardnegs_bert, hardnegs_bertmask = [], []
+            doc, docchar, neg, negchar = input[2:6]
+            docs_bert, docs_bertmask = input[7], input[10]
+            negs_bert, negs_bertmask = input[8], input[11]
+            b = doc.shape[0]
+            for index in hardids.flatten().cpu().tolist():
+                if index < b:
+                    hardneg.append(doc[index])
+                    hardcharneg.append(docchar[index])
+                    hardnegs_bert.append(docs_bert[index])
+                    hardnegs_bertmask.append(docs_bertmask[index])
+                else:
+                    hardneg.append(neg[index-b])
+                    hardcharneg.append(negchar[index-b])
+                    hardnegs_bert.append(negs_bert[index-b])
+                    hardnegs_bertmask.append(negs_bertmask[index-b])
+            hardneg = pad_sequence(hardneg, batch_first=True)
+            hardcharneg = pad_sequence(hardcharneg, batch_first=True)
+            hardnegs_bert = pad_sequence(hardnegs_bert, batch_first=True)
+            hardnegs_bertmask = pad_sequence(hardnegs_bertmask, batch_first=True)
+            input = input[:4] + [hardneg, hardcharneg] + input[6:8] +  [hardnegs_bert] + input[9:11] + [hardnegs_bertmask]
+            loss = model(input, mode='hard')
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+                   
+        torch.cuda.empty_cache()
+
         if step % 100 == 99:
             print(f"Epoch {epoch+1}, step {step+1}: {running_loss}")
             running_loss = 0 
+
+        if step % 300 == 299:
+            # evaluate
+            test_data = dataset.iter_permutation(mode='test')
+            model.eval()
+            with torch.no_grad():
+                # if epoch > 3:
+                #     mrr = evaluate(dataset, model)
+                #     if mrr > best_mrr:
+                #         best_mrr = mrr
+                #         print(f"best mrr: {best_mrr}")
+                    # torch.save(model.state_dict(), f'../model/model_best.pt')
+                sumhits5, sumhits1 = 0, 0
+                for input in test_data:
+                    if gpuflag:
+                        input = [d.cuda() for d in input]
+                    hits5, hits1 = model.scores(input)
+                    sumhits5 += hits5
+                    sumhits1 += hits1
+                curhits5 = sumhits5/len(dataset.test_permutation)
+                curhits1 = sumhits1/len(dataset.test_permutation)
+                if curhits5 > best_hits5:
+                    # torch.save(model.state_dict(), f'../model/model_best.pt')
+                    best_hits5 = curhits5
+                if curhits1 > best_hits1:
+                    best_hits1 = curhits1
+                    torch.save(model.state_dict(), f'../model/model_best.pt')
+                print(f"cur_hits5: {curhits5} ,  max hits5: {best_hits5}" )
+                print(f"cur_hits1: {curhits1} ,  max hits1: {best_hits1}")
+                torch.save(model.state_dict(), f'../model/model.pt')
+                # 更新hard_sample
+                # if epoch < 3:
+                #     dataset.readHardSamples(path, mode='random')
+                # else:
+                #     dataset.readHardSamples(path, mode='hard')
+                # if epoch > 5:
+                #     dataset.hardneguse = True
+                # dataset.readHardSamples(datapath, mode='hard') 
     lrscheduler.step()
-    # evaluate
-    test_data = dataset.iter_permutation(mode='test')
-    model.eval()
-    with torch.no_grad():
-        # if epoch > 3:
-        #     mrr = evaluate(dataset, model)
-        #     if mrr > best_mrr:
-        #         best_mrr = mrr
-        #         print(f"best mrr: {best_mrr}")
-            # torch.save(model.state_dict(), f'../model/model_best.pt')
-        sumhits5, sumhits1 = 0, 0
-        for input in test_data:
-            if gpuflag:
-                input = [d.cuda() for d in input]
-            hits5, hits1 = model.scores(input)
-            sumhits5 += hits5
-            sumhits1 += hits1
-        curhits5 = sumhits5/len(dataset.test_permutation)
-        curhits1 = sumhits1/len(dataset.test_permutation)
-        if curhits5 > best_hits5:
-            # torch.save(model.state_dict(), f'../model/model_best.pt')
-            best_hits5 = curhits5
-        if curhits1 > best_hits1:
-            best_hits1 = curhits1
-            torch.save(model.state_dict(), f'../model/model_best.pt')
-        print(f"cur_hits5: {curhits5} ,  max hits5: {best_hits5}" )
-        print(f"cur_hits1: {curhits1} ,  max hits1: {best_hits1}")
-        torch.save(model.state_dict(), f'../model/model.pt')
-        # 更新hard_sample
-        # if epoch < 3:
-        #     dataset.readHardSamples(path, mode='random')
-        # else:
-        #     dataset.readHardSamples(path, mode='hard')
-        # if epoch > 5:
-        #     dataset.hardneguse = True
-        # dataset.readHardSamples(datapath, mode='hard') 
     
 
  
@@ -217,7 +253,7 @@ def generateEmbeddingFile(dataset, model):
             f.write( str(i+1) + '\t' + ','.join(emb) + '\n')
 
 model.load_state_dict(torch.load(f'../model/model_best.pt'))  
-#generateEmbeddingFile(dataset, model)
+generateEmbeddingFile(dataset, model)
 
 
 def generateHardSample():
@@ -270,4 +306,4 @@ def generateHardSample():
             hard_samples = [str(id + 1) for id in list(I[index])]
             f.write(str(index+1) + '\t' + ','.join(hard_samples) + '\n' )
                 
-#generateHardSample()
+generateHardSample()

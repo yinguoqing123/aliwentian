@@ -7,20 +7,21 @@ import math
 class Model(nn.Module):
     def __init__(self, nums_word, nums_char, dims, harduse=False, embedding_init=None) -> None:
         super().__init__()
-        self.config = BertConfig.from_pretrained("hfl/rbt3")  # (attention_probs_dropout_prob, hidden_dropout_prob)
-        self.config.update({'output_hidden_states': True})
-        self.bert = BertModel.from_pretrained("hfl/rbt3", config=self.config)
-        self.tokenizer = BertTokenizer.from_pretrained("hfl/rbt3")
+        self.config = BertConfig.from_pretrained("huawei-noah/TinyBERT_6L_zh")  # (attention_probs_dropout_prob, hidden_dropout_prob)
+        #self.config.update({'output_hidden_states': True})
+        self.bert = BertModel.from_pretrained("huawei-noah/TinyBERT_6L_zh", config=self.config)
+        self.tokenizer = BertTokenizer.from_pretrained("huawei-noah/TinyBERT_6L_zh")
         self.wordemb = nn.Embedding(nums_word, 100)
         self.charemb = nn.Embedding(nums_char, dims)
         self.word2char = nn.Linear(100, dims)
-        self.block = Block(dims)
-        self.fusion = nn.Linear(dims*4, 4)
+        # self.block = Block(dims)
+        self.queryfusion = nn.Linear(dims*3, 3)
+        self.docfusion = nn.Linear(dims*2, 2)
         self.mlp = nn.Linear(768, dims)
         # self.block = AttentionPooling1D(dims)
-        self.position_emb = nn.Embedding(64, dims)
-        self.positionalencoding1d(dims, 64)
-        self.register_buffer("position_ids", torch.arange(64).expand((1, -1)))
+        # self.position_emb = nn.Embedding(64, dims)
+        # self.positionalencoding1d(dims, 64)
+        # self.register_buffer("position_ids", torch.arange(64).expand((1, -1)))
         self.harduse = harduse
         #self.queryatt = AttentionPooling1D(dims)
         #self.docatt = AttentionPooling1D(dims)
@@ -29,44 +30,62 @@ class Model(nn.Module):
         #self.qd1 = nn.Linear(dims, 128)
         #self.dd1 = nn.Linear(dims, 128)
         self.cretirion = nn.CrossEntropyLoss()
+        self.querytowweight = nn.Parameter(torch.ones(3)*1.0)
+        self.doctowerweight = nn.Parameter(torch.ones(2)*1.0)
         if embedding_init is not None:
             self.wordemb.weight.data = torch.tensor(embedding_init, dtype=torch.float)
             self.wordemb.weight.requires_grad = False
             
-    def embFusion(self, queryEmb, queryEmbbert):
-        b = queryEmb.shape[0]
-        queryEmbbert = self.mlp(queryEmbbert)
-        weight = self.fusion(torch.cat([queryEmb, queryEmbbert], dim=-1))
-        weight = torch.softmax(weight, dim=-1) # (batch_size, 2)
-        queryEmb = weight.unsqueeze(-1) * torch.stack([queryEmb, queryEmbbert], dim=1)
-        queryEmb = torch.sum(queryEmb, dim=1)
+    def queryFusion(self, querycharEmb, querywordEmb, queryEmbbert):
+        weight = self.queryfusion(torch.cat([querycharEmb, querywordEmb, queryEmbbert], dim=-1))
+        weight = torch.softmax(weight, dim=-1) # (batch_size, 3)
+        # queryEmb = weight.unsqueeze(-1) * torch.stack([queryEmb, queryEmbbert], dim=1)
+        # queryEmb = torch.sum(queryEmb, dim=1)
         # queryEmb = queryEmb + queryEmbbert
-        return queryEmb
+        emb = torch.stack([querycharEmb, querywordEmb, queryEmbbert], dim=1)
+        # emb = self.querytowweight[None, :, None].expand_as(emb) * emb
+        emb = weight.unsqueeze(dim=-1) * emb
+        emb = torch.sum(emb, dim=1) 
+        return emb
+    
+    def docFusion(self, docwordEmb, docEmbbert):
+        weight = self.docfusion(torch.cat([docwordEmb, docEmbbert], dim=-1))
+        weight = torch.softmax(weight, dim=-1) # (batch_size, 2)
+        emb = torch.stack([docwordEmb, docEmbbert], dim=1)
+        # emb = self.doctowerweight[None, :, None].expand_as(emb) * emb
+        emb = weight.unsqueeze(dim=-1) * emb
+        emb = torch.sum(emb, dim=1)
+        return emb
         
     def queryTower(self, input):
         """
         param: input  
         """
         query, querychar, query_bert, query_bertmask = input
-        mask = torch.gt(querychar, 0).unsqueeze(dim=-1).float()
+        char_mask = torch.gt(querychar, 0).float()
+        word_mask = torch.gt(query, 0).float()
         querywordEmb = self.wordemb(query)
+        querywordEmb = torch.sum(querywordEmb, dim=1) / torch.sum(word_mask, dim=1, keepdim=True) 
         querywordEmb = self.word2char(querywordEmb)
+        
         querycharEmb = self.charemb(querychar)
-        positionEmb = self.position_emb(self.position_ids[:, :query.shape[1]])
-        #queryEmb = torch.sum(queryEmb * mask, dim=-2)
-        #queryEmb = queryEmb / torch.sum(mask, dim=-2)
-        queryEmb = querywordEmb + querycharEmb 
+        querycharEmb = torch.sum(querycharEmb, dim=1) / torch.sum(char_mask, dim=1, keepdim=True)
+        # positionEmb = self.position_emb(self.position_ids[:, :query.shape[1]])
+        # queryEmb = torch.sum(queryEmb * mask, dim=-2)
+        # queryEmb = queryEmb / torch.sum(mask, dim=-2)
+        # queryEmb = querywordEmb + querycharEmb 
         # queryEmb = queryEmb.permute(0, 2, 1)
         # queryEmb = self.conv1d(queryEmb)
         # queryEmb = self.conv1d2(queryEmb)
         # queryEmb = queryEmb.permute(0, 2, 1)
         # queryEmb = self.queryatt(queryEmb, mask)
         # queryEmb = self.qd1(queryEmb)
-        queryEmb = self.block((queryEmb, mask)) 
+        # queryEmb = self.block((queryEmb, mask)) 
         
         queryEmbbert = self.bert(query_bert, query_bertmask)[0][:, 0, :] 
+        queryEmbbert = self.mlp(queryEmbbert)
 
-        queryEmb = self.embFusion(queryEmb, queryEmbbert)
+        queryEmb = self.queryFusion(querycharEmb, querywordEmb, queryEmbbert)
         queryEmb = F.normalize(queryEmb, dim=-1)
         # queryEmb = queryEmb + queryEmbbert
         
@@ -75,32 +94,54 @@ class Model(nn.Module):
         
     def docTower(self, input):
         doc, docchar, doc_bert, doc_bertmask = input
-        mask = torch.gt(doc, 0).unsqueeze(dim=-1).float()
+        char_mask = torch.gt(docchar, 0).float()
+        word_mask = torch.gt(doc, 0).float()
         docwordEmb = self.wordemb(doc)
+        docwordEmb = torch.sum(docwordEmb, dim=1) / torch.sum(word_mask, dim=1, keepdim=True)
         docwordEmb = self.word2char(docwordEmb)
+        
         doccharemb = self.charemb(docchar)
-        positionEmb = self.position_emb(self.position_ids[:, :doc.shape[1]])
-        #docEmb = torch.sum(docEmb * mask, dim=-2)
-        #docEmb = docEmb / torch.sum(mask, dim=-2)
-        docEmb = docwordEmb + doccharemb 
+        doccharemb = torch.sum(doccharemb, dim=1) / torch.sum(char_mask, dim=1, keepdim=True)
+        # positionEmb = self.position_emb(self.position_ids[:, :doc.shape[1]])
+        # docEmb = torch.sum(docEmb * mask, dim=-2)
+        # docEmb = docEmb / torch.sum(mask, dim=-2)
+        # docEmb = docwordEmb + doccharemb 
         # docEmb = docEmb.permute(0, 2, 1)
         # docEmb = self.conv1d(docEmb)
         # docEmb = self.conv1d2(docEmb)
         # docEmb = docEmb.permute(0, 2, 1)
         # docEmb = self.docatt(docEmb, mask)
         # docEmb = self.dd1(docEmb)
-        docEmb = self.block((docEmb, mask)) 
+        # docEmb = self.block((docEmb, mask)) 
         
         docEmbbert = self.bert(doc_bert, doc_bertmask)[0][:, 0, :] 
+        docEmbbert = self.mlp(docEmbbert)
         
-        docEmb = self.embFusion(docEmb, docEmbbert)
+        docEmb = self.docFusion(docwordEmb, docEmbbert)
         # docEmb = docEmb + docEmbbert
         
-        docEmb = = F.normalize(docEmb, dim=-1)
+        docEmb = F.normalize(docEmb, dim=-1)
         #docEmb = torch.relu(self.dd1(docEmb))
         return docEmb
-        
-    def forward(self, input):
+    
+    def forward(self, input, mode='easy'):
+        if mode == 'hard':
+            return self.forwardhard(input)
+        else:
+            return self.forwardeasy(input)
+            
+    def forwardhard(self, input):
+        query, querychar, doc, docchar, neg, negchar,  queries_bert, docs_bert, negs_bert, queries_bertmask, docs_bertmask, negs_bertmask = input
+        queryEmb = self.queryTower((query, querychar, queries_bert, queries_bertmask))
+        docEmb = self.docTower((doc, docchar, docs_bert, docs_bertmask))
+        negEmb = self.docTower((neg, negchar, negs_bert, negs_bertmask)) 
+        pos_scores = torch.sum(queryEmb * docEmb, dim=-1, keepdim=True)
+        neg_scores = torch.sum(queryEmb * negEmb, dim=-1, keepdim=True)
+        score = torch.cat([pos_scores, neg_scores], dim=-1) - pos_scores
+        loss = torch.logsumexp(score*20, dim=-1).mean()
+        return loss
+                
+    def forwardeasy(self, input):
         if not self.harduse:
             query, querychar, doc, docchar, neg, negchar,  queries_bert, docs_bert, negs_bert, queries_bertmask, docs_bertmask, negs_bertmask = input
         else:
@@ -111,21 +152,21 @@ class Model(nn.Module):
         # neg = F.pad(neg, (0, maxlen-neg.shape[1]))
         # negchar = F.pad(negchar, (0, maxlen-negchar.shape[1]))
         queryEmb = self.queryTower((query, querychar, queries_bert, queries_bertmask))
-        docEmb = self.queryTower((doc, docchar, docs_bert, docs_bertmask))
-        negEmb = self.queryTower((neg, negchar, negs_bert, negs_bertmask))
+        docEmb = self.docTower((doc, docchar, docs_bert, docs_bertmask))
+        negEmb = self.docTower((neg, negchar, negs_bert, negs_bertmask))
         output = (queryEmb, docEmb, negEmb)
         # reshape
         if self.harduse:
             b, hard_num, s = hardneg.shape
             hardneg = hardneg.reshape(-1, s)
-            hardneg_char = hardneg_char.reshape(-1, s)
+            hardneg_char = hardneg_char.reshape(-1, hardneg_char.shape[-1])
             hard_bert = hard_bert.reshape(-1, hard_bert.shape[-1])
             hard_bertmask = hard_bertmask.reshape(-1, hard_bertmask.shape[-1])
             hardnegEmb = self.docTower((hardneg, hardneg_char, hard_bert, hard_bertmask))
             hardnegEmb = hardnegEmb.reshape(b, hard_num, -1)
             output += (hardnegEmb, )
-        loss = self.loss(output)
-        return loss
+        loss, hardids = self.loss(output)
+        return loss, hardids
     
     def loss(self, input):
         if not self.harduse:
@@ -142,10 +183,14 @@ class Model(nn.Module):
         # scores = scores[:, :scores.shape[0]].t()
         # loss2 = self.cretirion(scores, labels)
         pos_score = torch.diag(scores[:, :scores.shape[0]])  # batch_size
-        scores_trans = (scores - pos_score.unsqueeze(dim=-1))*20  # 强制分开
-        loss = torch.logsumexp(scores_trans, dim=-1).mean()
+        scores_trans = (scores - pos_score.unsqueeze(dim=-1)) * 20  # 强制分开
+        scores_trans2 = (scores[:, :scores.shape[0]] - pos_score.unsqueeze(dim=0)) * 20
+        loss = torch.logsumexp(scores_trans, dim=-1).mean() + torch.logsumexp(scores_trans2, dim=0).mean()
         # return loss1 + loss2 * 0.4 
-        return loss
+        
+        hardids = torch.eye(scores.shape[0], scores.shape[1]).cuda() * -1e12  + scores
+        _, hardids = hardids.topk(1)
+        return loss, hardids
     
     def hardscore(self, queryEmb, hardnegEmb):
         b = queryEmb.shape[0]
@@ -179,7 +224,7 @@ class Model(nn.Module):
         if self.harduse:
             b, hard_num, s = hardneg.shape
             hardneg = hardneg.reshape(-1, s)
-            hardnegchar = hardnegchar.reshape(-1, s)
+            hardnegchar = hardnegchar.reshape(-1, hardnegchar.shape[-1])
             hard_bert = hard_bert.reshape(-1, hard_bert.shape[-1])
             hard_bertmask = hard_bertmask.reshape(-1, hard_bertmask.shape[-1])
             hardnegEmb = self.docTower((hardneg, hardnegchar, hard_bert, hard_bertmask))
