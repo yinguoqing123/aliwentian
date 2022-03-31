@@ -142,7 +142,7 @@ class BIMMSegment(BaseSegment):
 if __name__ == '__main__':     
     path = '../word2vec/word2vec.bin'
     word2vec = gensim.models.KeyedVectors.load(path)
-    d = word2vec.index_to_key[:1000000]
+    d = word2vec.index_to_key[:1500000]
     text = '男鞋2021新款秋季无后跟半拖休闲皮鞋男士一脚蹬韩版懒人豆豆鞋男'
     segment = BIMMSegment(d)
     print(' '.join(segment.cut(text)))

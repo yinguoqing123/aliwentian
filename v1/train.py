@@ -18,14 +18,14 @@ word2vec = gensim.models.KeyedVectors.load(path)
 
 gpuflag = torch.cuda.is_available()
         
-id2word = {i+2:j  for i, j in enumerate(word2vec.index_to_key[:1500000])}  # 0: <pad> 1:<unk>
+id2word = {i+2:j  for i, j in enumerate(word2vec.index_to_key[:1000000])}  # 0: <pad> 1:<unk>
 id2word[0] = '<pad>'
 id2word[1] = '<unk>'
 word2id = {j: i for i, j in id2word.items()}
 
 char2id, id2char = json.load(open("charidmap.json"))
 
-word2vec = word2vec.vectors[:1500000]
+word2vec = word2vec.vectors[:1000000]
 word_dim = word2vec.shape[1]
 word2vec = np.concatenate([np.zeros((2, word_dim)), word2vec])
 
@@ -33,9 +33,13 @@ datapath = 'D:\\ai-risk\\aliwentian\\data\\'
 datapath = '../data/'
 harduse = False
 #tokenizer = BertTokenizer.from_pretrained("hfl/rbt3")
-tokenizer = BertTokenizer.from_pretrained("huawei-noah/TinyBERT_6L_zh")
-dataset = MyDataSet(datapath, word2id, char2id, tokenizer=tokenizer, batch_size=128, negs_num=64, hard_num=2, hardneguse=harduse)
+# huawei-noah/TinyBERT_6L_zh
+tokenizer = BertTokenizer.from_pretrained("hfl/chinese-roberta-wwm-ext")
+dataset = MyDataSet(datapath, word2id, char2id, tokenizer=tokenizer, batch_size=40, negs_num=32, hard_num=1, hardneguse=harduse)
 model = Model(len(word2id), len(char2id), 128, harduse=harduse, embedding_init = word2vec)
+
+# state_dict = torch.load(f'../model/model_best.pt')
+# model.load_state_dict(state_dict, strict=False) 
 
 bert_parameters = list(model.bert.parameters())
 other_parameters = []
@@ -44,18 +48,19 @@ for name, param in model.named_parameters():
         other_parameters.append(param)
 
 
-p = [{'params': bert_parameters, 'lr': 3e-5}, {'params': other_parameters, 'lr': 1e-3}]
+p = [{'params': bert_parameters, 'lr': 2e-5}, {'params': other_parameters, 'lr': 3e-4}]
 optimizer = torch.optim.Adam(p)   # 1.4版本要加上
 
-# parameters = list(model.fusion.parameters())
+print(other_parameters)
+
+# parameters = list(model.parameters())
 # optimizer = torch.optim.Adam(parameters, lr=1e-3)
 
 train_data = dataset.iter_permutation()
-lrscheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.8)  # lr * epoch**setp
+lrscheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9)  # lr * epoch**setp
 best_hits5, best_hits1 = 0.0, 0.0
 best_mrr = 0.0
 
-model.load_state_dict(torch.load(f'../model/model_best.pt')) 
 if gpuflag:
     model = model.cuda()
 
@@ -128,7 +133,7 @@ with torch.no_grad():
 print(f"cur hits5: {best_hits5}, cur hits1: {best_hits1}")
 
 #dataset.readHardSamples(path, mode='random')
-for epoch in range(4, 15):
+for epoch in range(3):
     running_loss = 0
     for step in range(len(dataset)):
         input = next(train_data)
@@ -140,13 +145,16 @@ for epoch in range(4, 15):
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
+        torch.cuda.empty_cache()
         # hardids 再训练一次
-        if epoch >= 3:
+        if epoch >= 4:
             hardneg, hardcharneg = [], []
             hardnegs_bert, hardnegs_bertmask = [], []
+            hardneg_words = []
             doc, docchar, neg, negchar = input[2:6]
             docs_bert, docs_bertmask = input[7], input[10]
             negs_bert, negs_bertmask = input[8], input[11]
+            q_words, d_words, negs_words = input[-3:]
             b = doc.shape[0]
             for index in hardids.flatten().cpu().tolist():
                 if index < b:
@@ -154,16 +162,19 @@ for epoch in range(4, 15):
                     hardcharneg.append(docchar[index])
                     hardnegs_bert.append(docs_bert[index])
                     hardnegs_bertmask.append(docs_bertmask[index])
+                    hardneg_words.append(d_words[index])
                 else:
                     hardneg.append(neg[index-b])
                     hardcharneg.append(negchar[index-b])
                     hardnegs_bert.append(negs_bert[index-b])
                     hardnegs_bertmask.append(negs_bertmask[index-b])
+                    hardneg_words.append(negs_words[index-b])
             hardneg = pad_sequence(hardneg, batch_first=True)
             hardcharneg = pad_sequence(hardcharneg, batch_first=True)
             hardnegs_bert = pad_sequence(hardnegs_bert, batch_first=True)
             hardnegs_bertmask = pad_sequence(hardnegs_bertmask, batch_first=True)
-            input = input[:4] + [hardneg, hardcharneg] + input[6:8] +  [hardnegs_bert] + input[9:11] + [hardnegs_bertmask]
+            hardneg_words = pad_sequence(hardneg_words, batch_first=True)
+            input = input[:4] + [hardneg, hardcharneg] + input[6:8] +  [hardnegs_bert] + input[9:11] + [hardnegs_bertmask] + [q_words,  d_words, hardneg_words]
             loss = model(input, mode='hard')
             optimizer.zero_grad()
             loss.backward()
@@ -219,6 +230,7 @@ for epoch in range(4, 15):
  
 # 生成embedding文件
 def generateEmbeddingFile(dataset, model):
+    model.eval()
     devqueryEmb = []
     for input in dataset.iter_queries(mode='dev'):
         input = [d.cuda() for d in input]
