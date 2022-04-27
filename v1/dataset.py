@@ -11,6 +11,7 @@ import gensim
 import os, json
 from segword import BIMMSegment
 from utils import convt
+import copy
 
 
 #jieba.initialize()
@@ -33,7 +34,7 @@ word2vec = gensim.models.KeyedVectors.load(path)
 seg = BIMMSegment(word2vec.index_to_key[:1000000])
 
 class MyDataSet():
-    def __init__(self, path, word2id, char2id, tokenizer=None, batch_size=32, maxlen=64, negs_num=64, hard_num=3, hardneguse=False):
+    def __init__(self, path, word2id, tokenizer=None, batch_size=32, maxlen=64, negs_num=64, hard_num=3, hardneguse=False):
         self.queries = self.readQuery(path)
         self.docs = self.readDoc(path)
         self.labels = self.readLabel(path)
@@ -43,7 +44,6 @@ class MyDataSet():
         self.step = 0
         self.batch_size = batch_size
         self.word2id = word2id
-        self.char2id = char2id
         self.maxlen = maxlen
         self.permutation = np.random.permutation(len(self.labels))
         self.train_permutation = self.permutation[:-2000]
@@ -55,41 +55,8 @@ class MyDataSet():
         self.hardneguse = hardneguse
         self.hardsamples = {}
         self.readHardSamples(path)
-        
-    def sethardMode(self, mode):
-        self.hardneguse = mode
-        
-    def encode(self, s):
-        #s = ''.join([' ' + char + ' ' if self.isDigitOrAlpha(char) else char for char in s])
-        s = s.lower()
-        id, idchar = [], []
-        for sub in s.split():
-            subchar = [self.char2id.get(char, 1) for char in sub]
-            sub = seg.lcut(sub)
-            #sub = self.words2charid(sub)
-            sub = [self.word2id.get(word, 1) for word in sub]
-            id.extend(sub)
-            idchar.extend(subchar)
-        # if mode != 'query':
-        #     assert keywords is not None, 'keywords must have words'
-        #     keyids = self.encode_keys(keywords)
-        #     id = keyids
-        return torch.tensor(id[:self.maxlen]), torch.tensor(idchar[:self.maxlen])
     
-    def encode_keys(self, keywords):
-        ids = []
-        keywords = list(set(keywords))
-        for key in keywords:
-            ids.append(self.word2id.get(key, 1))
-        return ids
-    
-    def encode2_(self, s):
-        encode_ = self.tokenizer.encode_plus(s, padding=True, truncation=True, 
-                                                 max_length=self.maxlen, return_attention_mask=True)
-        ids, mask = encode_['input_ids'], encode_['attention_mask']
-        return torch.tensor(ids), torch.tensor(mask)
-    
-    def words2charid_(self, words):
+    def words2charid(self, words):
         ids = []
         charids = []
         for word in words:
@@ -98,14 +65,13 @@ class MyDataSet():
             ids.extend([self.word2id.get(word, 1)] * len(id_))
         return ids, charids 
     
-    def encode2(self, s):
+    def encode(self, s):
         s = s.lower()
         s = convt(s)
         id, idchar = [], []
         for sub in s.split():
             sub = seg.lcut(sub)
-            sub, subchar = self.words2charid_(sub)
-            # sub = [self.word2id.get(word, 1) for word in sub]
+            sub, subchar = self.words2charid(sub)
             id.extend(sub)
             idchar.extend(subchar)
             
@@ -129,25 +95,16 @@ class MyDataSet():
             start = step * self.batch_size
             end = min(len(permutation), start + self.batch_size)
             negindices = np.random.choice(self.negsampels, self.negs_num)
-            queries, docs, negs = [], [], []
-            queries_char, docs_char, negs_char = [], [], []
             queries_bert, docs_bert, negs_bert = [], [], []
             queries_bertmask, docs_bertmask, negs_bertmask = [], [], []
             q_words, d_words, negs_words = [], [], []
             hardids = []
             for index in permutation[start:end]:
                 query = self.queries[self.labels[index][0]]
-                queryid, queryidchar = self.encode(query)
-                queries.append(queryid)
-                queries_char.append(queryidchar)
-
                 doc = self.docs[self.labels[index][1]]
-                docid, docidchar = self.encode(doc)       
-                docs.append(docid)
-                docs_char.append(docidchar)
-                
-                queries_ids, queries_mask, q_word = self.encode2(query)
-                doc_ids, doc_mask, d_word = self.encode2(doc)
+               
+                queries_ids, queries_mask, q_word = self.encode(query)
+                doc_ids, doc_mask, d_word = self.encode(doc)
                 queries_bert.append(queries_ids)
                 queries_bertmask.append(queries_mask)
                 docs_bert.append(doc_ids)
@@ -169,34 +126,23 @@ class MyDataSet():
                 
             for index in negindices:
                 negdoc = self.docs[index]
-                docid, docidchar = self.encode(negdoc) 
-                negs.append(docid[:self.maxlen])
-                negs_char.append(docidchar[:self.maxlen])
                 
-                negs_ids, negs_mask, negs_word = self.encode2(negdoc)
+                negs_ids, negs_mask, negs_word = self.encode(negdoc)
                 negs_bert.append(negs_ids)
                 negs_bertmask.append(negs_mask)
                 negs_words.append(negs_word)
                 
             if self.hardneguse:
-                hardnegs, hardnegs_char = [], []
                 hard_bert, hard_bertmask = [], []
                 hard_words = []
                 for index in range(len(hardids)):
                     for id in hardids[index]:
                         doc = self.docs[id]
-                        docid, docidchar = self.encode(doc)
-                        hardnegs.append(docid)
-                        hardnegs_char.append(docidchar)
-                        doc_ids, doc_mask, doc_words = self.encode2(doc)
+                        doc_ids, doc_mask, doc_words = self.encode(doc)
                         hard_bert.append(doc_ids)
                         hard_bertmask.append(doc_mask)
                         hard_words.append(doc_words)
                         
-                hardnegs = pad_sequence(hardnegs, batch_first=True)
-                hardnegs_char = pad_sequence(hardnegs_char, batch_first=True)  
-                hardnegs = hardnegs.reshape(len(hardids), self.hard_num, -1)
-                hardnegs_char = hardnegs_char.reshape(len(hardids), self.hard_num, -1)
                 hard_bert = pad_sequence(hard_bert, batch_first=True)
                 hard_bertmask = pad_sequence(hard_bertmask, batch_first=True)
                 hard_bert = hard_bert.reshape(len(hardids), self.hard_num, -1)
@@ -204,13 +150,7 @@ class MyDataSet():
                 hard_words = pad_sequence(hard_words, batch_first=True)
                 hard_words = hard_words.reshape(len(hardids), self.hard_num, -1)
             
-            queries = pad_sequence(queries, batch_first=True)
-            queries_char = pad_sequence(queries_char, batch_first=True)
-            docs = pad_sequence(docs, batch_first=True)
-            docs_char = pad_sequence(docs_char, batch_first=True)
-            negs = pad_sequence(negs, batch_first=True)
-            negs_char = pad_sequence(negs_char, batch_first=True)
-            
+          
             queries_bert = pad_sequence(queries_bert, batch_first=True)
             queries_bertmask = pad_sequence(queries_bertmask, batch_first=True)
             docs_bert = pad_sequence(docs_bert, batch_first=True)
@@ -222,9 +162,9 @@ class MyDataSet():
             negs_words = pad_sequence(negs_words, batch_first=True)
             
             if self.hardneguse:
-                yield queries, queries_char, docs, docs_char, negs, negs_char, queries_bert, docs_bert, negs_bert, queries_bertmask, docs_bertmask, negs_bertmask, hardnegs, hardnegs_char, hard_bert, hard_bertmask, q_words, d_words, negs_words, hard_words
+                yield queries_bert, docs_bert, negs_bert, queries_bertmask, docs_bertmask, negs_bertmask,  hard_bert, hard_bertmask, q_words, d_words, negs_words, hard_words
             else:
-                yield queries, queries_char, docs, docs_char, negs, negs_char, queries_bert, docs_bert, negs_bert, queries_bertmask, docs_bertmask, negs_bertmask, q_words, d_words, negs_words
+                yield queries_bert, docs_bert, negs_bert, queries_bertmask, docs_bertmask, negs_bertmask, q_words, d_words, negs_words
             if end == len(permutation):
                 step = 0
                 if mode == 'test':
@@ -232,11 +172,13 @@ class MyDataSet():
             else:
                 step += 1 
      
-    def iter_queries(self, mode='train'):
+    def iter_queries(self, mode='train', shuffle=False):
         step = 0
         assert mode in ('train', 'test', 'dev'),   "mode is invalid"
         if mode == 'train':
             queries_origin = self.queries[1:]
+            if shuffle:
+                np.random.shuffle(queries_origin)
         if mode == 'test':
             queries_origin = []
             for index in self.test_permutation:
@@ -246,76 +188,52 @@ class MyDataSet():
         while True:
             start = step * self.batch_size
             end = min(len(queries_origin), start + self.batch_size)
-            queries, queries_char = [], []
             queries_bert, queries_bertmask, q_words = [], [], []
             for index in range(start, end):
                 query = queries_origin[index]
-                queryid, queryidchar = self.encode(query)
-                queries.append(queryid)
-                queries_char.append(queryidchar)
-                
-                bert_ids, bert_mask, bert_words = self.encode2(query)
+                bert_ids, bert_mask, bert_words = self.encode(query)
                 queries_bert.append(bert_ids)
                 queries_bertmask.append(bert_mask)
                 q_words.append(bert_words)
                 
-            
-            queries = pad_sequence(queries, batch_first=True)
-            queries_char = pad_sequence(queries_char, batch_first=True)
-            
             queries_bert = pad_sequence(queries_bert, batch_first=True)
             queries_bertmask = pad_sequence(queries_bertmask, batch_first=True)
             q_words = pad_sequence(q_words, batch_first=True)
             
-            yield queries, queries_char, queries_bert, queries_bertmask, q_words
+            yield queries_bert, queries_bertmask, q_words
             if end == len(queries_origin):
                 step = 0
                 break
             else:
                 step += 1 
      
-    def iter_docs(self):
+    def iter_docs(self, shuffle=False):
         step = 0
+        if shuffle:
+            docs = copy.deepcopy(self.docs[1:])
+            np.random.shuffle(docs)
+        else:
+            docs = self.docs[1:]
         while True:
             start = step * self.batch_size
-            end = min(len(self.docs), start + self.batch_size)
-            docs, docs_char = [], []
+            end = min(len(docs), start + self.batch_size)
             docs_bert, docs_bertmask, d_words = [], [], []
             for index in range(start, end): 
-                if index == 0:
-                    continue
-                doc = self.docs[index]
-                docid, docidchar = self.encode(doc)
-                docs.append(docid)
-                docs_char.append(docidchar)
-                
-                doc_ids, doc_mask, d_word = self.encode2(doc)
+                doc = docs[index]
+                doc_ids, doc_mask, d_word = self.encode(doc)
                 docs_bert.append(doc_ids)
                 docs_bertmask.append(doc_mask)
                 d_words.append(d_word)
                 
-            docs = pad_sequence(docs, batch_first=True)
-            docs_char = pad_sequence(docs_char, batch_first=True)
             docs_bert = pad_sequence(docs_bert, batch_first=True)
             docs_bertmask = pad_sequence(docs_bertmask, batch_first=True)
             d_words = pad_sequence(d_words, batch_first=True)
-            yield docs, docs_char, docs_bert, docs_bertmask, d_words
+            yield docs_bert, docs_bertmask, d_words
             if end == len(self.docs):
                 break
             else:
                 step += 1
-                
-    def words2charid(self, words, mode='query'): 
-        ids = []
-        if mode == 'query':
-            for word in words:
-                ids.extend([self.word2id.get(word, 1)] * len(word) )
-        else:
-            for word in words:
-                ids.extend([self.word2id.get(word, 1)])
-        return ids
 
-    
     def readQuery(self, path, mode='train'):
         if mode == 'train':
             with open(path+'train.query.txt', encoding='utf-8') as f:
